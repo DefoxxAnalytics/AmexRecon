@@ -45,10 +45,7 @@ st.set_page_config(
 # CONSTANTS & DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-VALID_USERS = {
-    "admin": "foxx2026",
-    "finance": "recon123",
-}
+ADMIN_ROLE = "admin"
 
 DEFAULT_ALIASES = [
     {"From": "SQSP",        "To": "Squarespace"},
@@ -87,7 +84,6 @@ XLSX_COLOURS = {
     "subheader":  "2F75B6",
 }
 
-AMEX_DESC_COL  = 6
 SKIP_KEYWORDS  = {"REMITTANCE", "PAYMENT", "BALANCE"}
 
 # Supplier families — invoices for V1018 Amazon may be under V1024 Amazon
@@ -102,26 +98,46 @@ NEAR_TOL_PCT = 0.02    # 2% tolerance for near-amount matching
 NEAR_TOL_MIN = 0.50    # 50-cent floor
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
+
+DEFAULT_USERS = {
+    "admin": hashlib.sha256("foxx2026".encode()).hexdigest(),
+    "finance": hashlib.sha256("recon123".encode()).hexdigest(),
+}
+
 DEFAULT_CONFIG = {
     "zapro_base_url": "https://versatex.zapro.ai",
     "zapro_api_key": "",
+    "users": DEFAULT_USERS,
 }
+
+
+def _hash_pw(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
 def load_config():
     if CONFIG_PATH.exists():
         try:
-            return {**DEFAULT_CONFIG, **json.loads(CONFIG_PATH.read_text(encoding="utf-8"))}
+            stored = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            merged = {**DEFAULT_CONFIG, **stored}
+            if "users" not in stored:
+                merged["users"] = dict(DEFAULT_USERS)
+            return merged
         except (json.JSONDecodeError, OSError):
             pass
     return dict(DEFAULT_CONFIG)
 
 
-def save_config(base_url, api_key):
-    CONFIG_PATH.write_text(
-        json.dumps({"zapro_base_url": base_url, "zapro_api_key": api_key}, indent=2),
-        encoding="utf-8",
-    )
+def save_config(config):
+    CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+
+def verify_login(username, password):
+    users = load_config().get("users", {})
+    stored_hash = users.get(username)
+    if not stored_hash:
+        return False
+    return stored_hash == _hash_pw(password)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -132,53 +148,67 @@ def inject_css():
     st.markdown("""
     <style>
     /* ── Fonts ─────────────────────────────────────────────────────── */
-    @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');
 
     /* ── Root palette ───────────────────────────────────────────────── */
     :root {
         --navy:   #1F3864;
         --blue:   #2F75B6;
-        --lblue:  #E8F1FA;
-        --green:  #C6EFCE;
-        --amber:  #FFEB9C;
-        --red:    #FFC7CE;
-        --ink:    #1a1a2e;
-        --muted:  #6B7280;
-        --border: #E5E7EB;
-        --bg:     #F8FAFC;
+        --lblue:  #EBF3FB;
+        --green:  #dcfce7;
+        --amber:  #fef3c7;
+        --red:    #fee2e2;
+        --ink:    #1e293b;
+        --muted:  #64748b;
+        --border: #e2e8f0;
+        --bg:     #f8fafc;
+        --card:   #ffffff;
     }
 
     /* ── Global ─────────────────────────────────────────────────────── */
     html, body, [class*="css"] {
-        font-family: 'DM Sans', sans-serif;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         background-color: var(--bg);
         color: var(--ink);
     }
 
     /* ── Hide default Streamlit chrome ──────────────────────────────── */
     #MainMenu, footer, header { visibility: hidden; }
-    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+    .block-container { padding-top: 1.25rem; padding-bottom: 2rem; }
 
     /* ── Login card ─────────────────────────────────────────────────── */
     .login-wrap {
-        max-width: 420px;
-        margin: 6rem auto 0;
-        background: white;
+        max-width: 400px;
+        margin: 5rem auto 0;
+        background: var(--card);
         border-radius: 16px;
-        padding: 3rem;
-        box-shadow: 0 4px 32px rgba(31,56,100,.10);
+        padding: 2.5rem;
+        box-shadow: 0 4px 24px rgba(30,41,59,.08), 0 1px 3px rgba(30,41,59,.04);
         border: 1px solid var(--border);
     }
     .login-logo {
-        font-family: 'DM Serif Display', serif;
-        font-size: 1.9rem;
-        color: var(--navy);
+        display: flex;
+        align-items: center;
+        gap: .6rem;
         margin-bottom: .25rem;
     }
+    .login-logo-icon {
+        width: 36px; height: 36px;
+        background: linear-gradient(135deg, var(--navy), var(--blue));
+        border-radius: 10px;
+        display: flex; align-items: center; justify-content: center;
+        color: white; font-weight: 700; font-size: .85rem;
+    }
+    .login-logo-text {
+        font-size: 1.4rem;
+        font-weight: 700;
+        color: var(--navy);
+        letter-spacing: -.02em;
+    }
     .login-sub {
-        font-size: .85rem;
+        font-size: .82rem;
         color: var(--muted);
-        margin-bottom: 2rem;
+        margin-bottom: 1.75rem;
     }
 
     /* ── Top header bar ─────────────────────────────────────────────── */
@@ -186,141 +216,146 @@ def inject_css():
         display: flex;
         align-items: center;
         gap: 1rem;
-        padding: .75rem 1.5rem;
+        padding: .7rem 1.25rem;
         background: var(--navy);
-        border-radius: 12px;
-        margin-bottom: 1.5rem;
+        border-radius: 10px;
+        margin-bottom: 1.25rem;
+    }
+    .app-header-logo {
+        width: 30px; height: 30px;
+        background: rgba(255,255,255,.15);
+        border-radius: 8px;
+        display: flex; align-items: center; justify-content: center;
+        color: white; font-weight: 700; font-size: .75rem;
     }
     .app-header-title {
-        font-family: 'DM Serif Display', serif;
-        font-size: 1.35rem;
+        font-size: 1.05rem;
+        font-weight: 600;
         color: white;
         flex: 1;
+        letter-spacing: -.01em;
     }
     .app-header-user {
-        font-size: .8rem;
-        color: rgba(255,255,255,.65);
+        font-size: .75rem;
+        color: rgba(255,255,255,.5);
+        background: rgba(255,255,255,.1);
+        padding: .25rem .75rem;
+        border-radius: 99px;
         font-family: 'DM Mono', monospace;
     }
 
     /* ── KPI cards ──────────────────────────────────────────────────── */
-    .kpi-grid { display: flex; gap: 1rem; margin-bottom: 1.25rem; }
+    .kpi-grid { display: flex; gap: .75rem; margin-bottom: 1rem; }
     .kpi-card {
         flex: 1;
-        background: white;
-        border-radius: 12px;
-        padding: 1.1rem 1.25rem;
+        background: var(--card);
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
         border: 1px solid var(--border);
-        box-shadow: 0 1px 4px rgba(0,0,0,.05);
+        transition: box-shadow .15s;
     }
+    .kpi-card:hover { box-shadow: 0 2px 8px rgba(30,41,59,.08); }
     .kpi-label {
-        font-size: .72rem;
+        font-size: .68rem;
         font-weight: 600;
-        letter-spacing: .08em;
+        letter-spacing: .06em;
         text-transform: uppercase;
         color: var(--muted);
-        margin-bottom: .3rem;
+        margin-bottom: .35rem;
     }
     .kpi-value {
-        font-family: 'DM Serif Display', serif;
-        font-size: 2.1rem;
+        font-size: 1.75rem;
+        font-weight: 700;
         color: var(--navy);
         line-height: 1;
+        letter-spacing: -.02em;
     }
+    .kpi-pct {
+        display: inline-block;
+        font-size: .65rem;
+        font-weight: 600;
+        padding: .1rem .4rem;
+        border-radius: 4px;
+        margin-left: .4rem;
+        vertical-align: middle;
+    }
+    .kpi-pct-green { background: #dcfce7; color: #16a34a; }
+    .kpi-pct-amber { background: #fef3c7; color: #d97706; }
+    .kpi-pct-red   { background: #fee2e2; color: #dc2626; }
     .kpi-sub {
-        font-size: .75rem;
+        font-size: .72rem;
         color: var(--muted);
-        margin-top: .2rem;
+        margin-top: .3rem;
     }
-    .kpi-green  .kpi-value { color: #22863a; }
-    .kpi-amber  .kpi-value { color: #b45309; }
-    .kpi-red    .kpi-value { color: #c0392b; }
+    .kpi-green  .kpi-value { color: #16a34a; }
+    .kpi-amber  .kpi-value { color: #d97706; }
+    .kpi-red    .kpi-value { color: #dc2626; }
     .kpi-navy   .kpi-value { color: var(--navy); }
 
     /* ── Section card ───────────────────────────────────────────────── */
     .section-card {
-        background: white;
-        border-radius: 12px;
-        padding: 1.5rem;
+        background: var(--card);
+        border-radius: 10px;
+        padding: 1.25rem;
         border: 1px solid var(--border);
-        margin-bottom: 1.25rem;
-        box-shadow: 0 1px 4px rgba(0,0,0,.04);
+        margin-bottom: 1rem;
     }
     .section-title {
         font-weight: 600;
-        font-size: .9rem;
+        font-size: .82rem;
         color: var(--navy);
         letter-spacing: .04em;
         text-transform: uppercase;
-        margin-bottom: 1rem;
-        padding-bottom: .5rem;
+        margin-bottom: .85rem;
+        padding-bottom: .4rem;
         border-bottom: 2px solid var(--lblue);
     }
 
     /* ── Status badges ──────────────────────────────────────────────── */
     .badge {
         display: inline-block;
-        padding: .2rem .65rem;
+        padding: .15rem .55rem;
         border-radius: 99px;
-        font-size: .72rem;
+        font-size: .68rem;
         font-weight: 600;
-        letter-spacing: .04em;
+        letter-spacing: .03em;
     }
-    .badge-green { background: #C6EFCE; color: #1a6b2a; }
-    .badge-amber { background: #FFEB9C; color: #7c5c00; }
-    .badge-red   { background: #FFC7CE; color: #8b0000; }
+    .badge-green { background: #dcfce7; color: #15803d; }
+    .badge-amber { background: #fef3c7; color: #b45309; }
+    .badge-red   { background: #fee2e2; color: #b91c1c; }
 
     /* ── Results table tweaks ───────────────────────────────────────── */
-    .stDataFrame { border-radius: 10px; overflow: hidden; }
+    .stDataFrame { border-radius: 8px; overflow: hidden; }
     .stDataFrame thead tr th {
-        background: var(--navy) !important;
-        color: white !important;
-        font-family: 'DM Sans', sans-serif !important;
-        font-size: .8rem !important;
+        background: #f1f5f9 !important;
+        color: var(--ink) !important;
+        font-family: 'Inter', sans-serif !important;
+        font-size: .75rem !important;
         font-weight: 600 !important;
+        border-bottom: 2px solid var(--border) !important;
     }
     .stDataFrame tbody tr td {
         font-family: 'DM Mono', monospace !important;
-        font-size: .8rem !important;
+        font-size: .78rem !important;
     }
 
     /* ── Sidebar ────────────────────────────────────────────────────── */
     section[data-testid="stSidebar"] {
-        background: white;
+        background: var(--card);
         border-right: 1px solid var(--border);
     }
     section[data-testid="stSidebar"] .css-1d391kg { padding-top: 1.5rem; }
 
-    /* ── Sidebar nav items ──────────────────────────────────────────── */
-    .nav-item {
-        display: flex;
-        align-items: center;
-        gap: .65rem;
-        padding: .55rem .9rem;
-        border-radius: 8px;
-        margin-bottom: .2rem;
-        cursor: pointer;
-        font-size: .88rem;
-        font-weight: 500;
-        color: var(--ink);
-        transition: background .15s;
-    }
-    .nav-item:hover, .nav-item.active {
-        background: var(--lblue);
-        color: var(--navy);
-    }
-    .nav-icon { font-size: 1.1rem; }
-
     /* ── Unmatched vendor chips ─────────────────────────────────────── */
-    .chip-grid { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
+    .chip-grid { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .5rem; }
     .chip {
-        background: #FEE2E2;
-        color: #7f1d1d;
+        background: #fee2e2;
+        color: #991b1b;
         border-radius: 6px;
-        padding: .2rem .6rem;
-        font-size: .75rem;
+        padding: .2rem .55rem;
+        font-size: .72rem;
         font-family: 'DM Mono', monospace;
-        border: 1px solid #FCA5A5;
+        border: 1px solid #fecaca;
     }
 
     /* ── Upload zone ────────────────────────────────────────────────── */
@@ -336,15 +371,16 @@ def inject_css():
         color: white;
         border: none;
         border-radius: 8px;
-        font-family: 'DM Sans', sans-serif;
+        font-family: 'Inter', sans-serif;
         font-weight: 600;
-        letter-spacing: .04em;
-        padding: .55rem 1.5rem;
-        transition: background .15s, transform .1s;
+        letter-spacing: .02em;
+        padding: .5rem 1.25rem;
+        transition: all .15s;
     }
     .stButton > button[kind="primary"]:hover {
         background: var(--blue);
         transform: translateY(-1px);
+        box-shadow: 0 2px 8px rgba(47,117,182,.25);
     }
 
     /* ── Slider ─────────────────────────────────────────────────────── */
@@ -354,18 +390,59 @@ def inject_css():
     .stProgress > div > div { background: var(--blue); }
 
     /* ── Tab strip ──────────────────────────────────────────────────── */
-    .stTabs [data-baseweb="tab-list"] { gap: .5rem; }
+    .stTabs [data-baseweb="tab-list"] { gap: .35rem; }
     .stTabs [data-baseweb="tab"] {
         border-radius: 8px 8px 0 0;
-        font-family: 'DM Sans', sans-serif;
+        font-family: 'Inter', sans-serif;
         font-weight: 500;
-        font-size: .88rem;
+        font-size: .82rem;
+        padding: .5rem 1rem;
     }
     .stTabs [aria-selected="true"] {
-        background: white;
+        background: var(--card);
         color: var(--navy);
         font-weight: 600;
     }
+
+    /* ── How-To guide ──────────────────────────────────────────────── */
+    .howto-section {
+        background: var(--card);
+        border-radius: 10px;
+        padding: 1.5rem;
+        border: 1px solid var(--border);
+        margin-bottom: 1rem;
+    }
+    .howto-section h4 {
+        color: var(--navy);
+        font-weight: 600;
+        font-size: .95rem;
+        margin-bottom: .5rem;
+    }
+    .howto-step {
+        display: flex;
+        gap: .75rem;
+        margin-bottom: .75rem;
+        align-items: flex-start;
+    }
+    .howto-num {
+        min-width: 28px; height: 28px;
+        background: var(--lblue);
+        color: var(--navy);
+        border-radius: 8px;
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 700; font-size: .8rem;
+    }
+    .howto-text { font-size: .85rem; color: var(--ink); line-height: 1.5; }
+    .howto-text code {
+        background: #f1f5f9; padding: .1rem .35rem; border-radius: 4px;
+        font-family: 'DM Mono', monospace; font-size: .78rem;
+    }
+    .howto-badge {
+        display: inline-block; font-size: .65rem; font-weight: 600;
+        padding: .1rem .4rem; border-radius: 4px;
+    }
+    .howto-badge-admin { background: #dbeafe; color: #1e40af; }
+    .howto-badge-all   { background: #f0fdf4; color: #15803d; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -585,24 +662,63 @@ def run_matching(transactions, supplier_index, alias_map, auto_thresh, review_th
 # FILE LOADERS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _find_col(headers, *candidates):
+    for i, h in enumerate(headers):
+        normalized = re.sub(r"\s+", " ", str(h)).strip().upper()
+        for c in candidates:
+            if c in normalized:
+                return i
+    return None
+
+
 def load_amex_bytes(file_bytes: bytes) -> list[dict]:
     wb = xlrd.open_workbook(file_contents=file_bytes)
     sh = wb.sheets()[0]
+
+    headers = [str(v) for v in sh.row_values(0)]
+    col_desc = _find_col(headers, "DESCRIPTION 1", "DESCRIPTION")
+    col_amt  = _find_col(headers, "AMOUNT")
+    col_date = _find_col(headers, "TRANSACTION DATE")
+    col_proc = _find_col(headers, "PROCESS DATE", "BUSINESS PROCESS")
+    col_ref  = _find_col(headers, "REFERENCE")
+
+    if col_desc is None or col_amt is None:
+        col_desc = col_desc or 6
+        col_amt  = col_amt or 5
+        col_date = col_date or 3
+        col_proc = col_proc or 2
+        col_ref  = col_ref or 4
+
+    col_supp_last  = _find_col(headers, "SUPPLEMENTAL CARDMEMBER LAST")
+    col_supp_first = _find_col(headers, "SUPPLEMENTAL CARDMEMBER FIRST")
+    col_basic_last  = _find_col(headers, "BASIC CARDMEMBER LAST")
+    col_basic_first = _find_col(headers, "BASIC CARDMEMBER FIRST")
+
     txns = []
     for r in range(1, sh.nrows):
         row  = sh.row_values(r)
-        desc = str(row[AMEX_DESC_COL]).strip()
+        desc = str(row[col_desc]).strip()
         if not desc:
             continue
         if any(kw in desc.upper() for kw in SKIP_KEYWORDS):
             continue
+
+        supp_first = str(row[col_supp_first]).strip() if col_supp_first is not None else ""
+        supp_last  = str(row[col_supp_last]).strip() if col_supp_last is not None else ""
+        if supp_first or supp_last:
+            cardmember = f"{supp_first} {supp_last}".strip()
+        elif col_basic_first is not None and col_basic_last is not None:
+            cardmember = f"{str(row[col_basic_first]).strip()} {str(row[col_basic_last]).strip()}"
+        else:
+            cardmember = str(row[1]).strip()
+
         txns.append({
             "row_num":      r + 1,
-            "cardmember":   str(row[1]).strip(),
-            "proc_date":    str(row[2]).strip(),
-            "txn_date":     str(row[3]).strip(),
-            "ref_no":       str(row[4]).strip(),
-            "amount_usd":   str(row[5]).strip(),
+            "cardmember":   cardmember,
+            "proc_date":    str(row[col_proc]).strip(),
+            "txn_date":     str(row[col_date]).strip(),
+            "ref_no":       str(row[col_ref]).strip() if col_ref is not None else "",
+            "amount_usd":   str(row[col_amt]).strip(),
             "raw_merchant": desc,
         })
     return txns
@@ -825,7 +941,10 @@ def init_state():
 def page_login():
     st.markdown("""
     <div class="login-wrap">
-        <div class="login-logo">💳 AmexRecon</div>
+        <div class="login-logo">
+            <div class="login-logo-icon">AR</div>
+            <div class="login-logo-text">AmexRecon</div>
+        </div>
         <div class="login-sub">Zapro Supplier Reconciliation Portal</div>
     </div>
     """, unsafe_allow_html=True)
@@ -839,25 +958,21 @@ def page_login():
             password = st.text_input("Password", type="password", placeholder="••••••••")
             submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
             if submitted:
-                if VALID_USERS.get(username) == password:
+                if verify_login(username, password):
                     st.session_state.logged_in = True
                     st.session_state.username  = username
                     st.rerun()
                 else:
-                    st.error("Invalid credentials. Try admin / foxx2026")
+                    st.error("Invalid credentials.")
         st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown(
-            "<p style='text-align:center;font-size:.75rem;color:#9CA3AF;margin-top:.5rem'>"
-            "Demo credentials: admin / foxx2026</p>",
-            unsafe_allow_html=True
-        )
 
 
 def render_header():
     st.markdown(f"""
     <div class="app-header">
-        <div class="app-header-title">💳 Amex → Zapro Reconciliation</div>
-        <div class="app-header-user">Signed in as <strong>{st.session_state.username}</strong></div>
+        <div class="app-header-logo">AR</div>
+        <div class="app-header-title">Amex &rarr; Zapro Reconciliation</div>
+        <div class="app-header-user">{st.session_state.username}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -896,7 +1011,7 @@ def render_sidebar():
         st.session_state.aliases = edited.dropna(how="all").to_dict("records")
 
         st.markdown("---")
-        if st.session_state.username == "admin":
+        if st.session_state.username == ADMIN_ROLE:
             st.markdown("**Zapro API Configuration**")
             new_url = st.text_input(
                 "Base URL",
@@ -912,8 +1027,37 @@ def render_sidebar():
             if st.button("Save API Config", use_container_width=True):
                 st.session_state.zapro_base_url = new_url
                 st.session_state.zapro_api_key = new_key
-                save_config(new_url, new_key)
+                cfg = load_config()
+                cfg["zapro_base_url"] = new_url
+                cfg["zapro_api_key"] = new_key
+                save_config(cfg)
                 st.success("API config saved")
+
+            st.markdown("---")
+            st.markdown("**User Management**")
+            with st.expander("Add / Reset User"):
+                new_user = st.text_input("Username", key="new_user_input")
+                new_pw   = st.text_input("Password", type="password", key="new_pw_input")
+                if st.button("Save User", use_container_width=True):
+                    if new_user and new_pw:
+                        cfg = load_config()
+                        cfg["users"][new_user] = _hash_pw(new_pw)
+                        save_config(cfg)
+                        st.success(f"User '{new_user}' saved")
+                    else:
+                        st.warning("Enter both username and password")
+            with st.expander("Remove User"):
+                cfg = load_config()
+                removable = [u for u in cfg.get("users", {}) if u != ADMIN_ROLE]
+                if removable:
+                    del_user = st.selectbox("Select user to remove", removable, key="del_user_select")
+                    if st.button("Remove User", use_container_width=True):
+                        cfg = load_config()
+                        cfg["users"].pop(del_user, None)
+                        save_config(cfg)
+                        st.success(f"User '{del_user}' removed")
+                else:
+                    st.caption("No removable users (admin cannot be removed)")
         else:
             if st.session_state.zapro_api_key:
                 st.success("Zapro API configured")
@@ -921,7 +1065,7 @@ def render_sidebar():
                 st.caption("Zapro API not configured. Ask admin to set credentials.")
 
         st.markdown("---")
-        if st.button("🚪 Sign Out", use_container_width=True):
+        if st.button("Sign Out", use_container_width=True):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
             st.rerun()
@@ -985,25 +1129,6 @@ def page_upload():
                 except Exception as exc:
                     st.error(f"Failed to fetch: {exc}")
         st.markdown('</div>', unsafe_allow_html=True)
-        if st.session_state.purchase_orders and st.session_state.username == "admin":
-            with st.expander("🔍 DEBUG: PO Custom Fields (remove later)"):
-                sample_pos = st.session_state.purchase_orders[:3]
-                for po in sample_pos:
-                    st.markdown(f"**PO: {po.get('display_identifier')}**")
-                    top_cfs = po.get("custom_fields") or []
-                    if top_cfs:
-                        st.write("Top-level custom_fields:")
-                        for cf in top_cfs:
-                            st.write(f"  `{cf.get('field_name')}`: `{cf.get('value')}`")
-                    else:
-                        st.write("No top-level custom_fields")
-                    for li in (po.get("line_items") or [])[:2]:
-                        li_cfs = li.get("custom_fields") or []
-                        if li_cfs:
-                            st.write(f"Line item {li.get('line_number')} custom_fields:")
-                            for cf in li_cfs:
-                                st.write(f"  `{cf.get('field_name')}`: `{cf.get('value')}`")
-                    st.markdown("---")
         with st.expander("Or upload JSON files manually"):
             _render_zapro_uploaders()
     else:
@@ -1160,26 +1285,6 @@ def run_and_store():
 
     enriching = bool(invoices and pos)
 
-    # DEBUG: surface enrichment state
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**DEBUG: Enrichment**")
-    st.sidebar.write(f"invoices: {len(invoices)}, pos: {len(pos)}")
-    st.sidebar.write(f"enriching: {enriching}")
-    st.sidebar.write(f"inv_by_amount keys: {len(inv_by_amount)}")
-    st.sidebar.write(f"inv_by_vid keys: {len(inv_by_vid)}")
-    st.sidebar.write(f"po_index keys: {len(po_index)}")
-    if invoices:
-        sample = invoices[0]
-        st.sidebar.write(f"Sample invoice keys: {list(sample.keys())[:10]}")
-        st.sidebar.write(f"  invoice_net_total: {sample.get('invoice_net_total')}")
-        st.sidebar.write(f"  supplier: {sample.get('supplier')}")
-        st.sidebar.write(f"  po_details: {sample.get('po_details')}")
-    if pos:
-        sample_po = pos[0]
-        st.sidebar.write(f"Sample PO keys: {list(sample_po.keys())[:10]}")
-        st.sidebar.write(f"  display_identifier: {sample_po.get('display_identifier')}")
-    # END DEBUG
-
     progress.progress(10, text=f"Matching {len(txns)} transactions…")
     results = []
     auto_t   = st.session_state.auto_thresh
@@ -1270,6 +1375,10 @@ def page_results():
             pass
 
     # Row 1 — supplier matching KPIs
+    n = len(results) or 1
+    auto_pct   = int(len(auto_r)   / n * 100)
+    review_pct = int(len(review_r) / n * 100)
+    nf_pct     = int(len(nf_r)     / n * 100)
     st.markdown(f"""
     <div class="kpi-grid">
         <div class="kpi-card kpi-navy">
@@ -1284,18 +1393,18 @@ def page_results():
         </div>
         <div class="kpi-card kpi-green">
             <div class="kpi-label">Auto Matched</div>
-            <div class="kpi-value">{len(auto_r)}</div>
-            <div class="kpi-sub">Score ≥ {st.session_state.auto_thresh} — ready to post</div>
+            <div class="kpi-value">{len(auto_r)}<span class="kpi-pct kpi-pct-green">{auto_pct}%</span></div>
+            <div class="kpi-sub">Score &ge; {st.session_state.auto_thresh}</div>
         </div>
         <div class="kpi-card kpi-amber">
             <div class="kpi-label">Needs Review</div>
-            <div class="kpi-value">{len(review_r)}</div>
-            <div class="kpi-sub">Score {st.session_state.review_thresh}–{st.session_state.auto_thresh - 1}</div>
+            <div class="kpi-value">{len(review_r)}<span class="kpi-pct kpi-pct-amber">{review_pct}%</span></div>
+            <div class="kpi-sub">Score {st.session_state.review_thresh}&ndash;{st.session_state.auto_thresh - 1}</div>
         </div>
         <div class="kpi-card kpi-red">
             <div class="kpi-label">Not Found</div>
-            <div class="kpi-value">{len(nf_r)}</div>
-            <div class="kpi-sub">Add to suppliers.json</div>
+            <div class="kpi-value">{len(nf_r)}<span class="kpi-pct kpi-pct-red">{nf_pct}%</span></div>
+            <div class="kpi-sub">Not in supplier list</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1412,6 +1521,222 @@ def page_results():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HOW-TO PAGE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def page_howto():
+    is_admin = st.session_state.username == ADMIN_ROLE
+
+    st.markdown("### How to Use This App")
+
+    # ── Quick Start ───────────────────────────────────────────────────
+    st.markdown("""
+    <div class="howto-section">
+        <h4>Quick Start</h4>
+        <div class="howto-step">
+            <div class="howto-num">1</div>
+            <div class="howto-text">Upload your <strong>Amex statement</strong> (.xls file) on the Upload page</div>
+        </div>
+        <div class="howto-step">
+            <div class="howto-num">2</div>
+            <div class="howto-text">Load Zapro data &mdash; click <strong>Fetch from Zapro</strong> (if API is configured) or upload JSON files manually</div>
+        </div>
+        <div class="howto-step">
+            <div class="howto-num">3</div>
+            <div class="howto-text">Click <strong>Run Matching</strong> to start the reconciliation</div>
+        </div>
+        <div class="howto-step">
+            <div class="howto-num">4</div>
+            <div class="howto-text">Review results in the <strong>Results</strong> tab and download the Excel report</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── API Setup (admin only) ────────────────────────────────────────
+    if is_admin:
+        st.markdown("""
+        <div class="howto-section">
+            <h4>API Configuration <span class="howto-badge howto-badge-admin">Admin Only</span></h4>
+            <div class="howto-step">
+                <div class="howto-num">1</div>
+                <div class="howto-text">Open the <strong>sidebar</strong> and find <strong>Zapro API Configuration</strong></div>
+            </div>
+            <div class="howto-step">
+                <div class="howto-num">2</div>
+                <div class="howto-text">Enter the <strong>Base URL</strong> (e.g. <code>https://versatex.zapro.ai</code>) and your <strong>API Key</strong></div>
+            </div>
+            <div class="howto-step">
+                <div class="howto-num">3</div>
+                <div class="howto-text">Click <strong>Save API Config</strong> &mdash; credentials are saved to disk and available to all users</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── Understanding Results ─────────────────────────────────────────
+    st.markdown("""
+    <div class="howto-section">
+        <h4>Match Statuses</h4>
+        <table style="width:100%;border-collapse:collapse;font-size:.85rem;">
+            <thead>
+                <tr style="border-bottom:2px solid #e2e8f0;">
+                    <th style="text-align:left;padding:.5rem .75rem;color:#64748b;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;">Status</th>
+                    <th style="text-align:left;padding:.5rem .75rem;color:#64748b;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;">Score Range</th>
+                    <th style="text-align:left;padding:.5rem .75rem;color:#64748b;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;">What It Means</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:.5rem .75rem;"><span class="badge badge-green">AUTO MATCH</span></td>
+                    <td style="padding:.5rem .75rem;">75&ndash;100</td>
+                    <td style="padding:.5rem .75rem;">High-confidence match, ready to post</td>
+                </tr>
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:.5rem .75rem;"><span class="badge badge-amber">REVIEW</span></td>
+                    <td style="padding:.5rem .75rem;">50&ndash;74</td>
+                    <td style="padding:.5rem .75rem;">Possible match &mdash; verify manually</td>
+                </tr>
+                <tr>
+                    <td style="padding:.5rem .75rem;"><span class="badge badge-red">NOT FOUND</span></td>
+                    <td style="padding:.5rem .75rem;">Below 50</td>
+                    <td style="padding:.5rem .75rem;">No matching supplier found</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Enrichment Columns ────────────────────────────────────────────
+    st.markdown("""
+    <div class="howto-section">
+        <h4>Enrichment Columns (when invoice/PO data is loaded)</h4>
+        <table style="width:100%;border-collapse:collapse;font-size:.85rem;">
+            <thead>
+                <tr style="border-bottom:2px solid #e2e8f0;">
+                    <th style="text-align:left;padding:.4rem .75rem;color:#64748b;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;">Column</th>
+                    <th style="text-align:left;padding:.4rem .75rem;color:#64748b;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;">Source</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:.4rem .75rem;">Invoice #, Date, Status, Total</td>
+                    <td style="padding:.4rem .75rem;">Matched invoice from Zapro</td>
+                </tr>
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:.4rem .75rem;">PO Number, PO Net Total</td>
+                    <td style="padding:.4rem .75rem;">Purchase order linked to the invoice</td>
+                </tr>
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:.4rem .75rem;">Procore PO ID</td>
+                    <td style="padding:.4rem .75rem;">Invoice custom field</td>
+                </tr>
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:.4rem .75rem;">Client / Project</td>
+                    <td style="padding:.4rem .75rem;">Invoice billing segment or PO ship-to title</td>
+                </tr>
+                <tr>
+                    <td style="padding:.4rem .75rem;">Inv Match Type</td>
+                    <td style="padding:.4rem .75rem;">EXACT, NEAR MATCH, AMBIGUOUS, or NOT MATCHED</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Sidebar Settings ──────────────────────────────────────────────
+    st.markdown("""
+    <div class="howto-section">
+        <h4>Sidebar Settings</h4>
+        <div class="howto-step">
+            <div class="howto-num">&uarr;</div>
+            <div class="howto-text"><strong>Auto-match floor</strong> &mdash; transactions scoring at or above this threshold are marked AUTO MATCH (default: 75)</div>
+        </div>
+        <div class="howto-step">
+            <div class="howto-num">&darr;</div>
+            <div class="howto-text"><strong>Review floor</strong> &mdash; transactions between this and the auto floor are marked REVIEW (default: 50)</div>
+        </div>
+        <div class="howto-step">
+            <div class="howto-num">A</div>
+            <div class="howto-text"><strong>Alias Table</strong> &mdash; maps Amex billing codes to supplier names before fuzzy matching. Add rows for recurring mismatches (e.g. <code>AMZN</code> &rarr; <code>Amazon</code>)</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Alias Table ───────────────────────────────────────────────────
+    st.markdown("""
+    <div class="howto-section">
+        <h4>Alias Table</h4>
+        <div class="howto-text" style="margin-bottom:.75rem;">
+            Amex merchants often appear with abbreviated or coded billing names that don&rsquo;t match your Zapro supplier list
+            (e.g. <code>AMZN MKTPL*MS6G</code> instead of <strong>Amazon</strong>). The alias table lets you
+            tell the app what these codes actually mean, <em>before</em> fuzzy matching runs.
+        </div>
+        <div class="howto-text" style="margin-bottom:.75rem;">
+            <strong>How it works:</strong> each alias has a <strong>From</strong> (the Amex code prefix) and a <strong>To</strong> (the supplier name to match against).
+            When the app sees a merchant name that <em>starts with</em> the From value (case-insensitive), it substitutes the To value for matching.
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:.85rem;margin-bottom:.75rem;">
+            <thead>
+                <tr style="border-bottom:2px solid #e2e8f0;">
+                    <th style="text-align:left;padding:.4rem .75rem;color:#64748b;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;">From (Amex Code)</th>
+                    <th style="text-align:left;padding:.4rem .75rem;color:#64748b;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;">To (Supplier Name)</th>
+                    <th style="text-align:left;padding:.4rem .75rem;color:#64748b;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;">What It Does</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:.4rem .75rem;"><code>AMZN</code></td>
+                    <td style="padding:.4rem .75rem;">Amazon</td>
+                    <td style="padding:.4rem .75rem;">Any merchant starting with &ldquo;AMZN&rdquo; matches against &ldquo;Amazon&rdquo;</td>
+                </tr>
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:.4rem .75rem;"><code>SQSP</code></td>
+                    <td style="padding:.4rem .75rem;">Squarespace</td>
+                    <td style="padding:.4rem .75rem;">&ldquo;SQSP* WEBSIT#2233362&rdquo; &rarr; matches &ldquo;Squarespace&rdquo;</td>
+                </tr>
+                <tr>
+                    <td style="padding:.4rem .75rem;"><code>HOMEDEPOT</code></td>
+                    <td style="padding:.4rem .75rem;">home depot</td>
+                    <td style="padding:.4rem .75rem;">Catches various Home Depot billing formats</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="howto-step">
+            <div class="howto-num">+</div>
+            <div class="howto-text"><strong>To add an alias:</strong> scroll to the bottom of the table in the sidebar, click the empty row, and type the From and To values</div>
+        </div>
+        <div class="howto-step">
+            <div class="howto-num">&minus;</div>
+            <div class="howto-text"><strong>To remove an alias:</strong> select the row in the sidebar table and press Delete</div>
+        </div>
+        <div class="howto-step">
+            <div class="howto-num">!</div>
+            <div class="howto-text"><strong>Tip:</strong> if a merchant keeps showing as REVIEW or NOT FOUND, check its raw name in the results table and add an alias for the prefix that appears before the <code>*</code> or <code>#</code></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Excel Report ──────────────────────────────────────────────────
+    st.markdown("""
+    <div class="howto-section">
+        <h4>Excel Report</h4>
+        <div class="howto-text" style="margin-bottom:.5rem;">The downloaded Excel file contains up to 3 sheets:</div>
+        <div class="howto-step">
+            <div class="howto-num">1</div>
+            <div class="howto-text"><strong>Reconciliation</strong> &mdash; all transactions with match results and enrichment data</div>
+        </div>
+        <div class="howto-step">
+            <div class="howto-num">2</div>
+            <div class="howto-text"><strong>Summary</strong> &mdash; match statistics and KPI overview</div>
+        </div>
+        <div class="howto-step">
+            <div class="howto-num">3</div>
+            <div class="howto-text"><strong>Invoice Detail</strong> &mdash; filtered view of invoice-matched transactions (only when enrichment data is loaded)</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1427,13 +1752,19 @@ def main():
     render_sidebar()
 
     if st.session_state.results:
-        tab_upload, tab_results = st.tabs(["📂 Upload / Run", "📊 Results"])
+        tab_upload, tab_results, tab_howto = st.tabs(["Upload / Run", "Results", "How To"])
         with tab_upload:
             page_upload()
         with tab_results:
             page_results()
+        with tab_howto:
+            page_howto()
     else:
-        page_upload()
+        tab_upload, tab_howto = st.tabs(["Upload / Run", "How To"])
+        with tab_upload:
+            page_upload()
+        with tab_howto:
+            page_howto()
 
 
 if __name__ == "__main__":
