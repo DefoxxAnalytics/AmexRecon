@@ -1,0 +1,7 @@
+config.json
+__pycache__/
+*.pyc
+*.xls
+*.xlsx
+.claude/
+.playwright-mcp/
