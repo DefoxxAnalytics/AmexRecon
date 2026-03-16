@@ -265,8 +265,11 @@ def inject_css():
     }
 
     /* ── Hide default Streamlit chrome ──────────────────────────────── */
-    #MainMenu, footer, header { visibility: hidden; }
-    .block-container { padding-top: 1.25rem; padding-bottom: 2rem; }
+    #MainMenu, footer { visibility: hidden; }
+    [data-testid="stAppDeployButton"] { display: none; }
+    [data-testid="stToolbarActions"] { display: none; }
+    [data-testid="stSidebarCollapseButton"] { visibility: visible !important; }
+    .block-container { padding-top: 2.5rem; padding-bottom: 2rem; }
 
     /* ── Login card ─────────────────────────────────────────────────── */
     .login-wrap {
@@ -307,11 +310,14 @@ def inject_css():
     .app-header {
         display: flex;
         align-items: center;
-        gap: 1rem;
+        gap: .75rem;
         padding: .7rem 1.25rem;
         background: var(--navy);
         border-radius: 10px;
+        margin-top: .5rem;
         margin-bottom: 1.25rem;
+        overflow: visible;
+        white-space: nowrap;
     }
     .app-header-logo {
         width: 30px; height: 30px;
@@ -326,6 +332,9 @@ def inject_css():
         color: white;
         flex: 1;
         letter-spacing: -.01em;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     .app-header-user {
         font-size: .75rem;
@@ -1118,22 +1127,21 @@ def render_sidebar():
         st.session_state.review_thresh = review_t
 
         st.markdown("---")
-        st.markdown("**Alias Table**")
-        st.caption("Maps Amex billing codes to supplier names before matching.")
-
-        alias_df = pd.DataFrame(st.session_state.aliases)
-        edited = st.data_editor(
-            alias_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            hide_index=True,
-            column_config={
-                "From": st.column_config.TextColumn("Amex Code", width="small"),
-                "To":   st.column_config.TextColumn("Supplier Name", width="medium"),
-            },
-            key="alias_editor",
-        )
-        st.session_state.aliases = edited.dropna(how="all").to_dict("records")
+        with st.expander("Alias Table"):
+            st.caption("Maps Amex billing codes to supplier names before matching.")
+            alias_df = pd.DataFrame(st.session_state.aliases)
+            edited = st.data_editor(
+                alias_df,
+                use_container_width=True,
+                num_rows="dynamic",
+                hide_index=True,
+                column_config={
+                    "From": st.column_config.TextColumn("Amex Code", width="small"),
+                    "To":   st.column_config.TextColumn("Supplier Name", width="medium"),
+                },
+                key="alias_editor",
+            )
+            st.session_state.aliases = edited.dropna(how="all").to_dict("records")
 
         st.markdown("---")
         if st.session_state.username == ADMIN_ROLE:
