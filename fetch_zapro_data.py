@@ -26,13 +26,14 @@ class ZaproClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self._token = None
+        self._session = requests.Session()
 
     def _request_with_retry(self, method, url, **kwargs):
         kwargs.setdefault("timeout", REQUEST_TIMEOUT)
         last_exc = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                resp = requests.request(method, url, **kwargs)
+                resp = self._session.request(method, url, **kwargs)
                 if resp.status_code == 200:
                     return resp
                 if resp.status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:

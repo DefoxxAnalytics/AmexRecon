@@ -15,13 +15,17 @@ Run:
     streamlit run app.py
 """
 
-import hashlib
+import html
 import io
 import json
+import logging
+import logging.handlers
 import re
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+
+import bcrypt
 
 from fetch_zapro_data import ZaproClient, ZaproAPIError
 
@@ -97,11 +101,16 @@ SUPPLIER_GROUPS = [
 NEAR_TOL_PCT = 0.02    # 2% tolerance for near-amount matching
 NEAR_TOL_MIN = 0.50    # 50-cent floor
 
-CONFIG_PATH = Path(__file__).parent / "config.json"
+APP_DIR          = Path(__file__).parent
+CONFIG_PATH      = APP_DIR / "config.json"
+ATTEMPTS_PATH    = APP_DIR / "login_attempts.json"
+SESSION_TIMEOUT  = timedelta(minutes=30)
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_SECONDS    = 30
 
 DEFAULT_USERS = {
-    "admin": hashlib.sha256("foxx2026".encode()).hexdigest(),
-    "finance": hashlib.sha256("recon123".encode()).hexdigest(),
+    "admin":   bcrypt.hashpw("foxx2026".encode(), bcrypt.gensalt()).decode(),
+    "finance": bcrypt.hashpw("recon123".encode(), bcrypt.gensalt()).decode(),
 }
 
 DEFAULT_CONFIG = {
@@ -110,9 +119,36 @@ DEFAULT_CONFIG = {
     "users": DEFAULT_USERS,
 }
 
+# ── Logging ──────────────────────────────────────────────────────────────────
+
+_log = logging.getLogger("amexrecon")
+if not _log.handlers:
+    _log.setLevel(logging.INFO)
+    _handler = logging.handlers.RotatingFileHandler(
+        APP_DIR / "audit.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8",
+    )
+    _handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    _log.addHandler(_handler)
+
 
 def _hash_pw(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def _is_legacy_hash(stored):
+    return len(stored) == 64 and all(c in "0123456789abcdef" for c in stored)
+
+
+def _validate_password(password):
+    if len(password) < 8:
+        return "Password must be at least 8 characters"
+    if not re.search(r"[A-Z]", password):
+        return "Password must contain an uppercase letter"
+    if not re.search(r"[a-z]", password):
+        return "Password must contain a lowercase letter"
+    if not re.search(r"[0-9]", password):
+        return "Password must contain a number"
+    return None
 
 
 def load_config():
@@ -124,7 +160,7 @@ def load_config():
                 merged["users"] = dict(DEFAULT_USERS)
             return merged
         except (json.JSONDecodeError, OSError):
-            pass
+            _log.error("Failed to read config.json, using defaults")
     return dict(DEFAULT_CONFIG)
 
 
@@ -132,12 +168,68 @@ def save_config(config):
     CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
+def _load_attempts():
+    if ATTEMPTS_PATH.exists():
+        try:
+            return json.loads(ATTEMPTS_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_attempts(attempts):
+    ATTEMPTS_PATH.write_text(json.dumps(attempts, indent=2), encoding="utf-8")
+
+
+def _check_rate_limit(username):
+    attempts = _load_attempts()
+    entry = attempts.get(username)
+    if not entry:
+        return None
+    if entry["count"] >= MAX_LOGIN_ATTEMPTS:
+        elapsed = (datetime.now() - datetime.fromisoformat(entry["last"])).total_seconds()
+        remaining = LOCKOUT_SECONDS - elapsed
+        if remaining > 0:
+            return int(remaining)
+        attempts.pop(username, None)
+        _save_attempts(attempts)
+    return None
+
+
+def _record_failed_attempt(username):
+    attempts = _load_attempts()
+    entry = attempts.get(username, {"count": 0})
+    entry["count"] = entry.get("count", 0) + 1
+    entry["last"] = datetime.now().isoformat()
+    attempts[username] = entry
+    _save_attempts(attempts)
+    _log.warning(f"Failed login attempt for '{username}' (attempt {entry['count']})")
+
+
+def _clear_attempts(username):
+    attempts = _load_attempts()
+    if username in attempts:
+        attempts.pop(username)
+        _save_attempts(attempts)
+
+
 def verify_login(username, password):
     users = load_config().get("users", {})
     stored_hash = users.get(username)
     if not stored_hash:
         return False
-    return stored_hash == _hash_pw(password)
+
+    import hashlib
+    if _is_legacy_hash(stored_hash):
+        if stored_hash == hashlib.sha256(password.encode()).hexdigest():
+            cfg = load_config()
+            cfg["users"][username] = _hash_pw(password)
+            save_config(cfg)
+            _log.info(f"Auto-upgraded password hash for '{username}' from SHA-256 to bcrypt")
+            return True
+        return False
+
+    return bcrypt.checkpw(password.encode(), stored_hash.encode())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -451,21 +543,31 @@ def inject_css():
 # MATCHING ENGINE  (inline — no import needed)
 # ─────────────────────────────────────────────────────────────────────────────
 
+_RE_STAR_SUFFIX = re.compile(r'\*\S+')
+_RE_HASH_SUFFIX = re.compile(r'#\S+')
+_RE_TLD_WORD    = re.compile(r'\b(?:COM|NET|ORG|IO)\b')
+_RE_TLD_DOT     = re.compile(r'\.(?:COM|NET|ORG|IO)')
+_RE_PHONE       = re.compile(r'\b\d{3}[-.\s]\d{3,4}[-.\s]\d{4}\b')
+_RE_LONG_NUM    = re.compile(r'\b\d{4,}\b')
+_RE_NON_ALNUM   = re.compile(r'[^A-Z0-9 ]')
+_RE_MULTI_SPACE = re.compile(r'\s{2,}')
+_UK_NOISE       = {"LON", "GREATER", "LONDON"}
+
+
 def normalise(raw: str) -> str:
     s = raw.upper()
-    s = re.sub(r'\*\S+', '', s)
-    s = re.sub(r'#\S+', '', s)
-    s = re.sub(r'\b(?:COM|NET|ORG|IO)\b', '', s)
-    s = re.sub(r'\.(?:COM|NET|ORG|IO)', '', s)
-    s = re.sub(r'\b\d{3}[-.\s]\d{3,4}[-.\s]\d{4}\b', '', s)
-    s = re.sub(r'\b\d{4,}\b', '', s)
-    s = re.sub(r'[^A-Z0-9 ]', ' ', s)
-    s = re.sub(r'\s{2,}', ' ', s).strip()
+    s = _RE_STAR_SUFFIX.sub('', s)
+    s = _RE_HASH_SUFFIX.sub('', s)
+    s = _RE_TLD_WORD.sub('', s)
+    s = _RE_TLD_DOT.sub('', s)
+    s = _RE_PHONE.sub('', s)
+    s = _RE_LONG_NUM.sub('', s)
+    s = _RE_NON_ALNUM.sub(' ', s)
+    s = _RE_MULTI_SPACE.sub(' ', s).strip()
     tokens = s.split()
     while tokens and tokens[-1] in US_STATES:
         tokens.pop()
-    uk_noise = {"LON", "GREATER", "LONDON"}
-    while tokens and tokens[-1] in uk_noise:
+    while tokens and tokens[-1] in _UK_NOISE:
         tokens.pop()
     return ' '.join(tokens[:5]).strip().lower()
 
@@ -671,7 +773,8 @@ def _find_col(headers, *candidates):
     return None
 
 
-def load_amex_bytes(file_bytes: bytes) -> list[dict]:
+def load_amex_bytes(file_bytes: bytes) -> tuple[list[dict], list[str]]:
+    warnings = []
     wb = xlrd.open_workbook(file_contents=file_bytes)
     sh = wb.sheets()[0]
 
@@ -681,6 +784,11 @@ def load_amex_bytes(file_bytes: bytes) -> list[dict]:
     col_date = _find_col(headers, "TRANSACTION DATE")
     col_proc = _find_col(headers, "PROCESS DATE", "BUSINESS PROCESS")
     col_ref  = _find_col(headers, "REFERENCE")
+
+    if col_desc is None:
+        warnings.append("Could not find Description column — using fallback position")
+    if col_amt is None:
+        warnings.append("Could not find Amount column — using fallback position")
 
     if col_desc is None or col_amt is None:
         col_desc = col_desc or 6
@@ -712,16 +820,23 @@ def load_amex_bytes(file_bytes: bytes) -> list[dict]:
         else:
             cardmember = str(row[1]).strip()
 
+        amt_str = str(row[col_amt]).strip()
+        try:
+            float(amt_str.replace(",", ""))
+        except (ValueError, TypeError):
+            warnings.append(f"Row {r + 1}: invalid amount '{amt_str}' — skipped")
+            continue
+
         txns.append({
             "row_num":      r + 1,
             "cardmember":   cardmember,
             "proc_date":    str(row[col_proc]).strip(),
             "txn_date":     str(row[col_date]).strip(),
             "ref_no":       str(row[col_ref]).strip() if col_ref is not None else "",
-            "amount_usd":   str(row[col_amt]).strip(),
+            "amount_usd":   amt_str,
             "raw_merchant": desc,
         })
-    return txns
+    return txns, warnings
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -926,6 +1041,8 @@ def init_state():
         "statement_name":  "Amex Statement",
         "active_tab":      "upload",
         "last_run_config": None,
+        "last_activity":   None,
+        "zapro_fetch_time": None,
         "zapro_base_url":  load_config()["zapro_base_url"],
         "zapro_api_key":   load_config()["zapro_api_key"],
     }
@@ -958,21 +1075,29 @@ def page_login():
             password = st.text_input("Password", type="password", placeholder="••••••••")
             submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
             if submitted:
-                if verify_login(username, password):
+                lockout = _check_rate_limit(username)
+                if lockout:
+                    st.error(f"Too many failed attempts. Try again in {lockout}s.")
+                elif verify_login(username, password):
+                    _clear_attempts(username)
                     st.session_state.logged_in = True
                     st.session_state.username  = username
+                    st.session_state.last_activity = datetime.now().isoformat()
+                    _log.info(f"Login successful: {username}")
                     st.rerun()
                 else:
+                    _record_failed_attempt(username)
                     st.error("Invalid credentials.")
         st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_header():
+    safe_user = html.escape(st.session_state.username)
     st.markdown(f"""
     <div class="app-header">
         <div class="app-header-logo">AR</div>
         <div class="app-header-title">Amex &rarr; Zapro Reconciliation</div>
-        <div class="app-header-user">{st.session_state.username}</div>
+        <div class="app-header-user">{safe_user}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1031,6 +1156,7 @@ def render_sidebar():
                 cfg["zapro_base_url"] = new_url
                 cfg["zapro_api_key"] = new_key
                 save_config(cfg)
+                _log.info(f"API config updated by '{st.session_state.username}'")
                 st.success("API config saved")
 
             st.markdown("---")
@@ -1039,13 +1165,19 @@ def render_sidebar():
                 new_user = st.text_input("Username", key="new_user_input")
                 new_pw   = st.text_input("Password", type="password", key="new_pw_input")
                 if st.button("Save User", use_container_width=True):
-                    if new_user and new_pw:
-                        cfg = load_config()
-                        cfg["users"][new_user] = _hash_pw(new_pw)
-                        save_config(cfg)
-                        st.success(f"User '{new_user}' saved")
-                    else:
+                    if not new_user or not new_pw:
                         st.warning("Enter both username and password")
+                    else:
+                        pw_err = _validate_password(new_pw)
+                        if pw_err:
+                            st.error(pw_err)
+                        else:
+                            cfg = load_config()
+                            action = "updated" if new_user in cfg["users"] else "created"
+                            cfg["users"][new_user] = _hash_pw(new_pw)
+                            save_config(cfg)
+                            _log.info(f"User '{new_user}' {action} by '{st.session_state.username}'")
+                            st.success(f"User '{new_user}' {action}")
             with st.expander("Remove User"):
                 cfg = load_config()
                 removable = [u for u in cfg.get("users", {}) if u != ADMIN_ROLE]
@@ -1055,6 +1187,7 @@ def render_sidebar():
                         cfg = load_config()
                         cfg["users"].pop(del_user, None)
                         save_config(cfg)
+                        _log.info(f"User '{del_user}' removed by '{st.session_state.username}'")
                         st.success(f"User '{del_user}' removed")
                 else:
                     st.caption("No removable users (admin cannot be removed)")
@@ -1093,6 +1226,9 @@ def _fetch_zapro_data():
         st.session_state.purchase_orders = pos
         st.write(f"  {len(pos)} purchase orders")
 
+        st.session_state.zapro_fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        _log.info(f"Zapro data fetched by '{st.session_state.username}': "
+                  f"{len(suppliers)} suppliers, {len(invoices)} invoices, {len(pos)} POs")
         status.update(label="Zapro data loaded", state="complete", expanded=False)
 
 
@@ -1116,7 +1252,9 @@ def page_upload():
                 sup_count = len(st.session_state.suppliers)
                 inv_count = len(st.session_state.invoices)
                 po_count  = len(st.session_state.purchase_orders)
-                st.success(f"Zapro data loaded — {sup_count} suppliers, {inv_count} invoices, {po_count} POs")
+                fetch_ts = st.session_state.zapro_fetch_time or ""
+                ts_note = f" (fetched {fetch_ts})" if fetch_ts else ""
+                st.success(f"Zapro data loaded — {sup_count} suppliers, {inv_count} invoices, {po_count} POs{ts_note}")
             else:
                 st.caption(f"Endpoint: {st.session_state.zapro_base_url}")
         with api_col2:
@@ -1126,8 +1264,9 @@ def page_upload():
                     st.rerun()
                 except ZaproAPIError as exc:
                     st.error(f"Zapro API error: {exc}")
-                except Exception as exc:
-                    st.error(f"Failed to fetch: {exc}")
+                except (ConnectionError, TimeoutError, OSError) as exc:
+                    _log.error(f"Network error fetching Zapro data: {exc}")
+                    st.error(f"Connection failed: {exc}")
         st.markdown('</div>', unsafe_allow_html=True)
         with st.expander("Or upload JSON files manually"):
             _render_zapro_uploaders()
@@ -1158,18 +1297,23 @@ def _render_amex_uploader():
     if amex_file:
         try:
             st.session_state.statement_name = amex_file.name.replace(".xls","")
-            txns = load_amex_bytes(amex_file.read())
+            txns, parse_warnings = load_amex_bytes(amex_file.read())
             st.session_state.transactions = txns
             st.success(f"✅  {len(txns)} transactions loaded")
-        except Exception as exc:
+            for w in parse_warnings:
+                st.warning(w)
+        except (ValueError, KeyError, IndexError) as exc:
+            _log.error(f"Amex parse error: {exc}", exc_info=True)
             st.error(f"Failed to parse Amex file: {exc}")
     elif st.button("Use sample file", key="use_sample_amex"):
         sample = Path("/mnt/user-data/uploads/Amex_test.xls")
         if sample.exists():
-            txns = load_amex_bytes(sample.read_bytes())
+            txns, parse_warnings = load_amex_bytes(sample.read_bytes())
             st.session_state.transactions = txns
             st.session_state.statement_name = "Statement_1008_Feb_2026"
             st.success(f"✅  {len(txns)} transactions loaded from sample")
+            for w in parse_warnings:
+                st.warning(w)
         else:
             st.warning("Sample file not found.")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1190,7 +1334,7 @@ def _render_zapro_uploaders():
                 st.session_state.suppliers = sup_data
                 active = sum(1 for s in sup_data if s.get("status") == "active")
                 st.success(f"✅  {len(sup_data)} suppliers loaded ({active} active)")
-            except (json.JSONDecodeError, Exception) as exc:
+            except (json.JSONDecodeError, ValueError, KeyError) as exc:
                 st.error(f"Failed to parse suppliers JSON: {exc}")
         elif st.button("Use sample file", key="use_sample_sup"):
             sample = Path("/mnt/user-data/uploads/suppliers.json")
@@ -1215,7 +1359,7 @@ def _render_zapro_uploaders():
                 inv_data = json.load(inv_file)
                 st.session_state.invoices = inv_data
                 st.success(f"✅  {len(inv_data)} invoices loaded")
-            except (json.JSONDecodeError, Exception) as exc:
+            except (json.JSONDecodeError, ValueError, KeyError) as exc:
                 st.error(f"Failed to parse invoices JSON: {exc}")
         elif st.button("Use sample file", key="use_sample_inv"):
             sample = Path("/mnt/user-data/uploads/invoices.json")
@@ -1240,7 +1384,7 @@ def _render_zapro_uploaders():
             po_data = json.load(po_file)
             st.session_state.purchase_orders = po_data
             st.success(f"✅  {len(po_data)} purchase orders loaded")
-        except (json.JSONDecodeError, Exception) as exc:
+        except (json.JSONDecodeError, ValueError, KeyError) as exc:
             st.error(f"Failed to parse purchase orders JSON: {exc}")
     elif st.button("Use sample file", key="use_sample_po"):
         sample = Path("/mnt/user-data/uploads/purchase_orders.json")
@@ -1350,6 +1494,11 @@ def run_and_store():
     enrich_note = f" | 📄 {inv_hits}/{len(results)} invoices matched" if enriching else ""
     st.success(f"✅  Complete — {len(results)} rows processed{enrich_note}")
     st.session_state.last_run_config = _config_hash()
+    auto_count = sum(1 for r in results if r["status"] == "AUTO MATCH")
+    review_count = sum(1 for r in results if r["status"] == "REVIEW")
+    nf_count = sum(1 for r in results if r["status"] == "NOT FOUND")
+    _log.info(f"Matching run by '{st.session_state.username}': "
+              f"{len(results)} txns | auto={auto_count} review={review_count} not_found={nf_count} inv_matched={inv_hits}")
     st.rerun()
 
 
@@ -1384,7 +1533,7 @@ def page_results():
         <div class="kpi-card kpi-navy">
             <div class="kpi-label">Total Transactions</div>
             <div class="kpi-value">{len(results)}</div>
-            <div class="kpi-sub">{st.session_state.statement_name}</div>
+            <div class="kpi-sub">{html.escape(st.session_state.statement_name)}</div>
         </div>
         <div class="kpi-card kpi-navy">
             <div class="kpi-label">Total Spend</div>
@@ -1442,13 +1591,26 @@ def page_results():
     # ── Unmatched vendor chips ─────────────────────────────────────────
     if nf_r:
         unmatched_names = sorted({r["raw_merchant"] for r in nf_r})
-        chips = "".join(f'<span class="chip">{n[:40]}</span>' for n in unmatched_names)
+        chips = "".join(f'<span class="chip">{html.escape(n[:40])}</span>' for n in unmatched_names)
         st.markdown(f"""
         <div class="section-card">
             <div class="section-title">❌ Vendors Not in Supplier List</div>
             <div class="chip-grid">{chips}</div>
         </div>
         """, unsafe_allow_html=True)
+
+    # ── Search filter ─────────────────────────────────────────────────
+    search_query = st.text_input(
+        "Search results", placeholder="Filter by merchant, supplier, or status...",
+        key="results_search", label_visibility="collapsed",
+    )
+    if search_query:
+        q = search_query.upper()
+        results = [r for r in results if
+                   q in r.get("raw_merchant", "").upper() or
+                   q in r.get("matched_name", "").upper() or
+                   q in r.get("status", "").upper() or
+                   q in r.get("supplier_id", "").upper()]
 
     # ── Results tabs ──────────────────────────────────────────────────
     tabs = ["All Results", "Needs Review / Not Found", "Auto Matched"]
@@ -1747,6 +1909,15 @@ def main():
     if not st.session_state.logged_in:
         page_login()
         return
+
+    if st.session_state.last_activity:
+        last = datetime.fromisoformat(st.session_state.last_activity)
+        if datetime.now() - last > SESSION_TIMEOUT:
+            _log.info(f"Session timeout for '{st.session_state.username}'")
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            st.rerun()
+    st.session_state.last_activity = datetime.now().isoformat()
 
     render_header()
     render_sidebar()

@@ -1,4 +1,6 @@
 config.json
+login_attempts.json
+audit.log*
 __pycache__/
 *.pyc
 *.xls
