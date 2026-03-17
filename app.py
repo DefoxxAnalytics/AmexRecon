@@ -16,6 +16,7 @@ Run:
 """
 
 import base64
+import hashlib
 import html
 import io
 import json
@@ -223,7 +224,6 @@ def verify_login(username, password):
     if not stored_hash:
         return False
 
-    import hashlib
     if _is_legacy_hash(stored_hash):
         if stored_hash == hashlib.sha256(password.encode()).hexdigest():
             cfg = load_config()
@@ -1903,6 +1903,80 @@ def page_howto():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AUDIT LOG (admin only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=30)
+def _parse_audit_logs():
+    log_base = APP_DIR / "audit.log"
+    paths = [log_base] + sorted(log_base.parent.glob("audit.log.[0-9]*"))
+    entries = []
+    seen = set()
+    for path in paths:
+        if not path.exists():
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(" | ", 2)
+                if len(parts) != 3:
+                    continue
+                key = (parts[0], parts[1].strip(), parts[2])
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append({
+                    "Timestamp": parts[0],
+                    "Level": parts[1].strip(),
+                    "Message": parts[2],
+                })
+    return entries
+
+
+def page_audit_log():
+    st.markdown("### Audit Log")
+
+    entries = _parse_audit_logs()
+    if not entries:
+        st.info("No audit log entries found.")
+        return
+
+    df = pd.DataFrame(entries)
+    df["_ts"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+    df = df.sort_values("_ts", ascending=False).reset_index(drop=True)
+
+    all_levels = sorted(df["Level"].unique().tolist())
+
+    col_search, col_level, col_date = st.columns([3, 2, 2])
+    with col_search:
+        search = st.text_input("Search messages", placeholder="e.g. Login, admin, error…",
+                               key="audit_search")
+    with col_level:
+        levels = st.multiselect("Severity", all_levels, default=all_levels,
+                                key="audit_levels")
+    with col_date:
+        min_date = df["_ts"].min().date() if df["_ts"].notna().any() else datetime.now().date()
+        max_date = df["_ts"].max().date() if df["_ts"].notna().any() else datetime.now().date()
+        date_range = st.date_input("Date range", value=(min_date, max_date),
+                                   min_value=min_date, max_value=max_date,
+                                   key="audit_dates")
+
+    mask = df["Level"].isin(levels)
+    if search:
+        mask &= df["Message"].str.contains(search, case=False, na=False)
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start, end = date_range
+        mask &= (df["_ts"].dt.date >= start) & (df["_ts"].dt.date <= end)
+
+    filtered = df.loc[mask, ["Timestamp", "Level", "Message"]]
+
+    st.caption(f"Showing {len(filtered)} of {len(df)} entries")
+    st.dataframe(filtered, use_container_width=True, hide_index=True, height=500)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1926,20 +2000,31 @@ def main():
     render_header()
     render_sidebar()
 
-    if st.session_state.results:
-        tab_upload, tab_results, tab_howto = st.tabs(["Upload / Run", "Results", "How To"])
-        with tab_upload:
-            page_upload()
-        with tab_results:
+    is_admin = st.session_state.username == ADMIN_ROLE
+    has_results = bool(st.session_state.results)
+
+    tab_names = ["Upload / Run"]
+    if has_results:
+        tab_names.append("Results")
+    tab_names.append("How To")
+    if is_admin:
+        tab_names.append("Audit Log")
+
+    tabs = st.tabs(tab_names)
+    idx = 0
+    with tabs[idx]:
+        page_upload()
+    idx += 1
+    if has_results:
+        with tabs[idx]:
             page_results()
-        with tab_howto:
-            page_howto()
-    else:
-        tab_upload, tab_howto = st.tabs(["Upload / Run", "How To"])
-        with tab_upload:
-            page_upload()
-        with tab_howto:
-            page_howto()
+        idx += 1
+    with tabs[idx]:
+        page_howto()
+    idx += 1
+    if is_admin:
+        with tabs[idx]:
+            page_audit_log()
 
 
 if __name__ == "__main__":
