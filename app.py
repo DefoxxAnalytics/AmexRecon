@@ -15,6 +15,7 @@ Run:
     streamlit run app.py
 """
 
+import base64
 import html
 import io
 import json
@@ -50,6 +51,9 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────────────
 
 ADMIN_ROLE = "admin"
+
+_LOGO_PATH = Path(__file__).parent / "Defoxx_logo.png"
+_LOGO_B64 = base64.b64encode(_LOGO_PATH.read_bytes()).decode() if _LOGO_PATH.exists() else ""
 
 DEFAULT_ALIASES = [
     {"From": "SQSP",        "To": "Squarespace"},
@@ -287,18 +291,8 @@ def inject_css():
         gap: .6rem;
         margin-bottom: .25rem;
     }
-    .login-logo-icon {
-        width: 36px; height: 36px;
-        background: linear-gradient(135deg, var(--navy), var(--blue));
-        border-radius: 10px;
-        display: flex; align-items: center; justify-content: center;
-        color: white; font-weight: 700; font-size: .85rem;
-    }
-    .login-logo-text {
-        font-size: 1.4rem;
-        font-weight: 700;
-        color: var(--navy);
-        letter-spacing: -.02em;
+    .login-logo-img {
+        height: 64px;
     }
     .login-sub {
         font-size: .82rem;
@@ -319,12 +313,9 @@ def inject_css():
         overflow: visible;
         white-space: nowrap;
     }
-    .app-header-logo {
-        width: 30px; height: 30px;
-        background: rgba(255,255,255,.15);
-        border-radius: 8px;
-        display: flex; align-items: center; justify-content: center;
-        color: white; font-weight: 700; font-size: .75rem;
+    .app-header-logo-img {
+        height: 28px;
+        border-radius: 4px;
     }
     .app-header-title {
         font-size: 1.05rem;
@@ -1065,13 +1056,12 @@ def init_state():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def page_login():
-    st.markdown("""
+    st.markdown(f"""
     <div class="login-wrap">
         <div class="login-logo">
-            <div class="login-logo-icon">AR</div>
-            <div class="login-logo-text">AmexRecon</div>
+            <img src="data:image/png;base64,{_LOGO_B64}" class="login-logo-img" alt="d.e. Foxx logo" />
         </div>
-        <div class="login-sub">Zapro Supplier Reconciliation Portal</div>
+        <div class="login-sub">Amex &rarr; Zapro Supplier Reconciliation</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1104,7 +1094,7 @@ def render_header():
     safe_user = html.escape(st.session_state.username)
     st.markdown(f"""
     <div class="app-header">
-        <div class="app-header-logo">AR</div>
+        <img src="data:image/png;base64,{_LOGO_B64}" class="app-header-logo-img" alt="logo" />
         <div class="app-header-title">Amex &rarr; Zapro Reconciliation</div>
         <div class="app-header-user">{safe_user}</div>
     </div>
@@ -1113,6 +1103,12 @@ def render_header():
 
 def render_sidebar():
     with st.sidebar:
+        st.markdown(
+            f'<div style="text-align:center;padding:.5rem 0 .25rem">'
+            f'<img src="data:image/png;base64,{_LOGO_B64}" style="height:48px" alt="logo" />'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
         st.markdown("### ⚙️ Settings")
         st.markdown("---")
 
