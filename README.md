@@ -6,7 +6,7 @@ Browser-based tool that matches American Express credit card statement transacti
 
 - **Live API integration** — fetch suppliers, invoices, and purchase orders directly from Zapro
 - **Config persistence** — API credentials and user accounts stored in `config.json` (gitignored)
-- **Hashed authentication** — SHA-256 hashed passwords with admin user management
+- **Hashed authentication** — bcrypt hashed passwords with admin user management (auto-upgrades legacy SHA-256 hashes)
 - **Auto-detect Amex format** — parses both simplified and full Amex export layouts by matching header names
 - **Invoice and PO enrichment** — cross-references matched transactions against invoices by exact amount, near-amount (within 2% or $0.50), and by supplier group
 - **Supplier grouping** — amount matching works across related supplier IDs (e.g., Amazon and Amazon Business Partner)
@@ -14,6 +14,8 @@ Browser-based tool that matches American Express credit card statement transacti
 - **Alternative match suggestions** — REVIEW rows include up to two alternative supplier candidates
 - **In-app How-To guide** — dedicated tab with alias table docs, match status reference, and usage instructions
 - **Three-sheet Excel export** — Reconciliation + Summary + Invoice Detail
+- **Admin-only Audit Log** — filterable log viewer (search, severity, date range) for reviewing logins, config changes, and matching runs
+- **Docker support** — Dockerfile and docker-compose.yml for containerised deployment
 
 ## Quick Start
 
@@ -30,6 +32,14 @@ streamlit run app.py
 ```
 
 The app opens at `http://localhost:8501`.
+
+### Alternative: Run with Docker
+
+```bash
+docker-compose up --build -d
+```
+
+The app opens at `http://localhost:8503`. Config is persisted via a volume mount of `config.json`.
 
 ### 3. Configure API credentials (admin only)
 
@@ -52,7 +62,7 @@ Single-file Streamlit application (`app.py`). Imports `ZaproClient` and `ZaproAP
 ### Data flow
 
 ```
-Login (SHA-256 hashed passwords from config.json)
+Login (bcrypt hashed passwords from config.json)
   └── Upload / Fetch
         ├── Amex XLS  ──► load_amex_bytes()  ──► transactions list
         └── Zapro data
@@ -84,7 +94,9 @@ Results
 | `build_supplier_index(suppliers)` | app.py | Creates `{normalised_name: supplier_dict}` from active suppliers |
 | `enrich_transaction(...)` | app.py | Three-pass invoice lookup: exact amount + same supplier, exact amount any supplier, near-amount within group |
 | `_get_project(inv, po_rec)` | app.py | Cascades through billing segments, PO ship-to, PO custom fields, PO bill-to |
-| `verify_login(username, password)` | app.py | Checks SHA-256 hash against `config.json` users |
+| `verify_login(username, password)` | app.py | Checks bcrypt hash against `config.json` users; auto-upgrades legacy SHA-256 hashes |
+| `page_audit_log()` | app.py | Admin-only audit log viewer with search, severity, and date range filters |
+| `_parse_audit_logs()` | app.py | Cached parser for `audit.log` + rotated backups; deduplicates entries |
 | `ZaproClient` | fetch_zapro_data.py | API client with token generation, paginated fetching, retry with backoff |
 
 ## Configuration
@@ -118,7 +130,7 @@ python fetch_zapro_data.py
 
 ## Authentication
 
-Passwords are SHA-256 hashed. Default credentials on first run:
+Passwords are bcrypt hashed. Legacy SHA-256 hashes are auto-upgraded on successful login. Default credentials on first run:
 
 | Username | Password | Role |
 |---|---|---|
@@ -133,8 +145,13 @@ Admin can manage users via the sidebar (add, reset password, remove). The admin 
 Stream/
 ├── app.py                  # Main Streamlit application
 ├── fetch_zapro_data.py     # ZaproClient class + standalone export script
+├── Defoxx_logo.png         # d.e. Foxx & Associates logo (login, header, sidebar)
 ├── requirements.txt        # Python dependencies
+├── Dockerfile              # Container image definition
+├── docker-compose.yml      # Docker Compose service config (port 8503)
+├── .dockerignore           # Docker build exclusions
 ├── config.json             # API credentials + users (gitignored, created at runtime)
+├── audit.log               # Rotating audit log (gitignored, created at runtime)
 ├── README.md
 ├── CLAUDE.md
 ├── User_Guide.md
@@ -151,3 +168,4 @@ Stream/
 | `openpyxl` | Writing formatted Excel output |
 | `pandas` | DataFrame manipulation and display |
 | `requests` | HTTP calls in `ZaproClient` |
+| `bcrypt` | Password hashing and verification |

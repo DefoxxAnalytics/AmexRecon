@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Amex → Zapro Supplier Reconciliation tool built with Streamlit. Matches Amex credit card statement transactions against a Zapro supplier list using fuzzy string matching (rapidfuzz).
 
-- **`app.py`** — main Streamlit app with live Zapro API integration, config persistence, hashed auth, invoice/PO enrichment, supplier grouping, in-app How-To guide, and 3-sheet Excel export
+- **`app.py`** — main Streamlit app with live Zapro API integration, config persistence, bcrypt auth, invoice/PO enrichment, supplier grouping, admin-only audit log viewer, in-app How-To guide, and 3-sheet Excel export
 - **`fetch_zapro_data.py`** — `ZaproClient` class imported by the app, also works as a standalone export script
 
 ## Commands
@@ -17,6 +17,9 @@ pip install -r requirements.txt
 
 # Run the app
 streamlit run app.py
+
+# Run with Docker (port 8503)
+docker-compose up --build -d
 
 # Run standalone Zapro data export (writes JSON + CSV to timestamped directory)
 export ZAPRO_BASE_URL=https://your-tenant.zapro.ai
@@ -32,7 +35,7 @@ Single-file Streamlit app (`app.py`). Imports `ZaproClient` and `ZaproAPIError` 
 
 ### Flow
 
-1. **Login** → SHA-256 hashed credentials stored in `config.json`; verified by `verify_login()`
+1. **Login** → bcrypt hashed credentials stored in `config.json`; verified by `verify_login()` (auto-upgrades legacy SHA-256 hashes)
 2. **Load data** → Amex `.xls` (auto-detected column layout via `_find_col()`) + Zapro data (via API fetch or JSON file uploads)
 3. **Matching** → `normalise()` cleans merchant names → `apply_alias()` resolves known billing codes → `rapidfuzz.process.extract` with `token_set_ratio` scorer finds best supplier match
 4. **Enrichment** (when invoices + POs loaded) → `enrich_transaction()` cross-references each matched transaction against invoice data by amount
@@ -51,8 +54,10 @@ Single-file Streamlit app (`app.py`). Imports `ZaproClient` and `ZaproAPIError` 
 | `run_and_store()` | Streamlit orchestration: builds indexes, loops transactions with progress bar, calls `enrich_transaction()`, stores in `st.session_state.results` |
 | `enrich_transaction(vid, amt, inv_by_amount, inv_by_vid, po_index)` | Three-pass lookup: exact amount + same supplier, exact amount any supplier, near-amount within supplier group (±2% or $0.50) |
 | `_get_project(inv, po_rec)` | Cascade: invoice billing segment `Project-Foxx` → PO `ship_to_info.title` → PO custom fields containing "project"/"client" → PO `bill_to_info.title` |
-| `verify_login(username, password)` | Hashes input with SHA-256 and compares against `config.json` users |
-| `_hash_pw(password)` | Returns `hashlib.sha256(password.encode()).hexdigest()` |
+| `verify_login(username, password)` | Checks bcrypt hash against `config.json` users; auto-upgrades legacy SHA-256 hashes |
+| `_hash_pw(password)` | Returns bcrypt hash of the password |
+| `page_audit_log()` | Admin-only audit log viewer with search, severity, and date range filters |
+| `_parse_audit_logs()` | Cached parser (`@st.cache_data(ttl=30)`) for `audit.log` + rotated backups; deduplicates entries |
 | `load_config()` / `save_config(config)` | Read/write `config.json` for API credentials and user accounts |
 | `_fetch_zapro_data()` | Streamlit wrapper: instantiates `ZaproClient`, calls all three fetch methods with `st.status` progress display |
 | `page_howto()` | In-app How-To guide: quick start, API setup, match statuses, enrichment columns, alias table, Excel report |
@@ -74,7 +79,7 @@ client.fetch_all(endpoint)     # Generic paginated fetcher used by the above thr
 ## Authentication
 
 - `ADMIN_ROLE = "admin"` — constant used for role checks
-- `DEFAULT_USERS` — seeded on first run with SHA-256 hashed passwords
+- `DEFAULT_USERS` — seeded on first run with bcrypt hashed passwords
 - `verify_login()` hashes input and compares against `config.json` users dict
 - Admin sidebar: add/reset users, remove non-admin users
 - Admin account cannot be removed
@@ -88,8 +93,8 @@ client.fetch_all(endpoint)     # Generic paginated fetcher used by the above thr
   "zapro_base_url": "https://your-tenant.zapro.ai",
   "zapro_api_key": "your-api-key-here",
   "users": {
-    "admin": "<sha256-hash>",
-    "finance": "<sha256-hash>"
+    "admin": "<bcrypt-hash>",
+    "finance": "<bcrypt-hash>"
   }
 }
 ```
@@ -118,3 +123,8 @@ client.fetch_all(endpoint)     # Generic paginated fetcher used by the above thr
 - `st.set_page_config()` must remain the first Streamlit call
 - `SKIP_KEYWORDS = {"REMITTANCE", "PAYMENT", "BALANCE"}` — rows containing these are excluded during parsing
 - `config.json` is gitignored and must not be committed
+- `audit.log` is a rotating log (5 MB, 3 backups) written by `RotatingFileHandler`; format: `%(asctime)s | %(levelname)s | %(message)s`
+- The "Audit Log" tab is admin-only; gated by `st.session_state.username == ADMIN_ROLE`
+- Log parsing is cached with `@st.cache_data(ttl=30)` to avoid re-reading files on every widget interaction
+- `Defoxx_logo.png` is base64-encoded at module load and embedded inline in login page, header bar, and sidebar
+- Docker: `Dockerfile` + `docker-compose.yml` map host port 8503 → container port 8501; `config.json` is volume-mounted for persistence

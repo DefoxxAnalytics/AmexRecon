@@ -21,7 +21,8 @@ This guide covers daily use of the reconciliation tool for both admin and financ
 8. [Downloading the Excel Report](#downloading-the-excel-report)
 9. [Configuring Match Thresholds](#configuring-match-thresholds)
 10. [Managing the Alias Table](#managing-the-alias-table)
-11. [Troubleshooting](#troubleshooting)
+11. [Audit Log (Admin Only)](#audit-log-admin-only)
+12. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -42,7 +43,7 @@ The tool has two user roles:
 
 The login screen shows a username and password form. Enter your credentials and click **Sign In**.
 
-If the credentials are incorrect, an error message appears below the form. The app does not lock accounts after failed attempts.
+If the credentials are incorrect, an error message appears below the form. After 5 consecutive failed attempts, the account is locked out for 30 seconds.
 
 Once logged in, your username appears in the top-right corner of the header bar. To sign out, click **Sign Out** at the bottom of the sidebar.
 
@@ -278,6 +279,40 @@ The table is editable directly in the sidebar. Each row has two fields:
 To add a row, click the `+` icon at the bottom of the table. To remove a row, select it and press the delete key. Changes apply on the next **Run Matching** click.
 
 Aliases use prefix matching, not substring or exact matching. The alias `HOME DEPOT` matches `HOME DEPOT STORE 1234` but not `THE HOME DEPOT`.
+
+---
+
+## Audit Log (Admin Only)
+
+The **Audit Log** tab is visible only to admin users. It displays a filterable view of all application activity recorded in `audit.log`, including logins, configuration changes, data fetches, matching runs, and errors.
+
+### Filters
+
+The log viewer provides three filter controls:
+
+| Filter | Description |
+|---|---|
+| **Search messages** | Free-text search across log messages (case-insensitive) |
+| **Severity** | Multiselect for log levels: INFO, WARNING, ERROR |
+| **Date range** | Start and end date picker to narrow entries by date |
+
+Entries are displayed newest-first. A caption shows how many entries match the current filters out of the total.
+
+### What is logged
+
+| Event | Level | Example message |
+|---|---|---|
+| Successful login | INFO | `Login successful: admin` |
+| Failed login attempt | WARNING | `Failed login for 'admin' (attempt 3)` |
+| API config change | INFO | `API config updated by 'admin'` |
+| User created/updated | INFO | `User created/updated: finance by admin` |
+| User removed | INFO | `User removed: finance by admin` |
+| Zapro data fetch | INFO | `Fetched 142 suppliers, 1024 invoices, 387 POs` |
+| Matching run | INFO | `Matched 95 txns: 72 auto, 18 review, 5 not found` |
+| Session timeout | INFO | `Session timeout for 'finance'` |
+| Parse or API errors | ERROR | `Failed to parse Amex file: ...` |
+
+The log file rotates at 5 MB with up to 3 backup files retained.
 
 ---
 
