@@ -56,6 +56,12 @@ ADMIN_ROLE = "admin"
 _LOGO_PATH = Path(__file__).parent / "Defoxx_logo.png"
 _LOGO_B64 = base64.b64encode(_LOGO_PATH.read_bytes()).decode() if _LOGO_PATH.exists() else ""
 
+def _logo_img(css_class="", style="", alt="logo"):
+    if not _LOGO_B64:
+        return ""
+    attr = f'class="{css_class}"' if css_class else f'style="{style}"' if style else ""
+    return f'<img src="data:image/png;base64,{_LOGO_B64}" {attr} alt="{alt}" />'
+
 DEFAULT_ALIASES = [
     {"From": "SQSP",        "To": "Squarespace"},
     {"From": "AMZN",        "To": "Amazon"},
@@ -1056,11 +1062,10 @@ def init_state():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def page_login():
+    logo = _logo_img(css_class="login-logo-img", alt="d.e. Foxx logo")
     st.markdown(f"""
     <div class="login-wrap">
-        <div class="login-logo">
-            <img src="data:image/png;base64,{_LOGO_B64}" class="login-logo-img" alt="d.e. Foxx logo" />
-        </div>
+        <div class="login-logo">{logo}</div>
         <div class="login-sub">Amex &rarr; Zapro Supplier Reconciliation</div>
     </div>
     """, unsafe_allow_html=True)
@@ -1092,9 +1097,10 @@ def page_login():
 
 def render_header():
     safe_user = html.escape(st.session_state.username)
+    logo = _logo_img(css_class="app-header-logo-img")
     st.markdown(f"""
     <div class="app-header">
-        <img src="data:image/png;base64,{_LOGO_B64}" class="app-header-logo-img" alt="logo" />
+        {logo}
         <div class="app-header-title">Amex &rarr; Zapro Reconciliation</div>
         <div class="app-header-user">{safe_user}</div>
     </div>
@@ -1103,12 +1109,12 @@ def render_header():
 
 def render_sidebar():
     with st.sidebar:
-        st.markdown(
-            f'<div style="text-align:center;padding:.5rem 0 .25rem">'
-            f'<img src="data:image/png;base64,{_LOGO_B64}" style="height:48px" alt="logo" />'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+        sidebar_logo = _logo_img(style="height:48px")
+        if sidebar_logo:
+            st.markdown(
+                f'<div style="text-align:center;padding:.5rem 0 .25rem">{sidebar_logo}</div>',
+                unsafe_allow_html=True,
+            )
         st.markdown("### ⚙️ Settings")
         st.markdown("---")
 
@@ -1965,10 +1971,12 @@ def page_audit_log():
 
     mask = df["Level"].isin(levels)
     if search:
-        mask &= df["Message"].str.contains(search, case=False, na=False)
+        mask &= df["Message"].str.contains(search, case=False, na=False, regex=False)
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start, end = date_range
         mask &= (df["_ts"].dt.date >= start) & (df["_ts"].dt.date <= end)
+    elif isinstance(date_range, tuple) and len(date_range) == 1:
+        st.caption("Select an end date to apply the date filter.")
 
     filtered = df.loc[mask, ["Timestamp", "Level", "Message"]]
 

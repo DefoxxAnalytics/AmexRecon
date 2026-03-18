@@ -110,8 +110,8 @@ Stores API credentials and user accounts. Gitignored — never committed.
   "zapro_base_url": "https://your-tenant.zapro.ai",
   "zapro_api_key": "your-api-key-here",
   "users": {
-    "admin": "<sha256-hash>",
-    "finance": "<sha256-hash>"
+    "admin": "<bcrypt-hash>",
+    "finance": "<bcrypt-hash>"
   }
 }
 ```
