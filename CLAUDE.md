@@ -8,6 +8,10 @@ Amex → Zapro Supplier Reconciliation tool built with Streamlit. Matches Amex c
 
 - **`app.py`** — main Streamlit app with live Zapro API integration, config persistence, bcrypt auth, invoice/PO enrichment, supplier grouping, admin-only audit log viewer, in-app How-To guide, and 3-sheet Excel export
 - **`fetch_zapro_data.py`** — `ZaproClient` class imported by the app, also works as a standalone export script
+- **`Defoxx_logo.png`** — d.e. Foxx & Associates logo (resized to 128px height for web); base64-embedded in login, header, sidebar via `_logo_img()` helper
+- **`Dockerfile`** — Python 3.11-slim container with Python-based healthcheck
+- **`docker-compose.yml`** — maps host port 8503 → container 8501; bind-mounts `config.json`
+- **`entrypoint.sh`** — creates `config.json` if absent before starting Streamlit (prevents Docker bind-mount directory creation bug)
 
 ## Commands
 
@@ -56,6 +60,7 @@ Single-file Streamlit app (`app.py`). Imports `ZaproClient` and `ZaproAPIError` 
 | `_get_project(inv, po_rec)` | Cascade: invoice billing segment `Project-Foxx` → PO `ship_to_info.title` → PO custom fields containing "project"/"client" → PO `bill_to_info.title` |
 | `verify_login(username, password)` | Checks bcrypt hash against `config.json` users; auto-upgrades legacy SHA-256 hashes |
 | `_hash_pw(password)` | Returns bcrypt hash of the password |
+| `_logo_img(css_class, style, alt)` | Returns `<img>` tag with base64 logo or empty string if logo file is missing |
 | `page_audit_log()` | Admin-only audit log viewer with search, severity, and date range filters |
 | `_parse_audit_logs()` | Cached parser (`@st.cache_data(ttl=30)`) for `audit.log` + rotated backups; deduplicates entries |
 | `load_config()` / `save_config(config)` | Read/write `config.json` for API credentials and user accounts |
@@ -78,9 +83,11 @@ client.fetch_all(endpoint)     # Generic paginated fetcher used by the above thr
 
 ## Authentication
 
-- `ADMIN_ROLE = "admin"` — constant used for role checks
+- `ADMIN_ROLE = "admin"` — constant used for role checks; admin is identified by username, not a separate role field
 - `DEFAULT_USERS` — seeded on first run with bcrypt hashed passwords
-- `verify_login()` hashes input and compares against `config.json` users dict
+- `verify_login()` checks bcrypt hash; auto-upgrades legacy SHA-256 hashes on successful login
+- Rate limiting: `MAX_LOGIN_ATTEMPTS = 5`, `LOCKOUT_SECONDS = 30`, tracked in `login_attempts.json`
+- `SESSION_TIMEOUT = 30 minutes` — auto-logout on inactivity
 - Admin sidebar: add/reset users, remove non-admin users
 - Admin account cannot be removed
 
@@ -126,5 +133,9 @@ client.fetch_all(endpoint)     # Generic paginated fetcher used by the above thr
 - `audit.log` is a rotating log (5 MB, 3 backups) written by `RotatingFileHandler`; format: `%(asctime)s | %(levelname)s | %(message)s`
 - The "Audit Log" tab is admin-only; gated by `st.session_state.username == ADMIN_ROLE`
 - Log parsing is cached with `@st.cache_data(ttl=30)` to avoid re-reading files on every widget interaction
-- `Defoxx_logo.png` is base64-encoded at module load and embedded inline in login page, header bar, and sidebar
-- Docker: `Dockerfile` + `docker-compose.yml` map host port 8503 → container port 8501; `config.json` is volume-mounted for persistence
+- `Defoxx_logo.png` is base64-encoded at module load via `_logo_img()` helper; returns empty string when file is missing (no broken `<img>` tags)
+- Docker: `Dockerfile` + `docker-compose.yml` map host port 8503 → container port 8501; `config.json` is bind-mounted for persistence
+- `entrypoint.sh` creates `config.json` if absent to prevent Docker bind-mount from creating a directory
+- HEALTHCHECK uses Python `urllib.request` (not `curl`, which is absent from `python:3.11-slim`)
+- Audit log search uses `regex=False` for literal substring matching (prevents crash on special characters)
+- KPI row 2 (enrichment cards) only shown when `enriching=True`; "No Invoice Found" counts all transactions without an invoice match including NOT FOUND supplier status — this is intentional
